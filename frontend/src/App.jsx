@@ -587,34 +587,48 @@ function LiveDemoView({ sfx, playClick }) {
 
   const generateMockPrediction = (flux, name) => {
     const minVal = Math.min(...flux);
-    const medianVal = flux[Math.floor(flux.length / 2)];
+    const medianVal = flux[Math.floor(flux.length / 2)] || 1.0;
     const depth = medianVal - minVal;
+    
+    // Estimate noise
+    let diffsSum = 0;
+    for (let i = 0; i < flux.length - 1; i++) {
+      diffsSum += Math.pow(flux[i+1] - flux[i], 2);
+    }
+    const noise = Math.sqrt(diffsSum / (2 * (flux.length - 1))) || 0.01;
+    const snr = noise > 0 ? depth / noise : 0;
     
     let isPlanet = false;
     let verdict = "Rejected (Stellar Variability)";
-    let reason = "Stellar rotation or high amplitude pulsations present without clean dips.";
-    let probability = 0.08;
-    let estimatedDepth = 0.0;
+    let reason = "Stellar rotation or high amplitude pulsations present without clean transit dips.";
+    let probability = 0.08 + Math.random() * 0.05;
+    let estimatedDepth = Math.max(0, depth * 100);
     
-    if (depth > 0.01) {
-      estimatedDepth = depth * 100;
-      if (depth > 0.08) {
-        verdict = "Rejected (Eclipsing Binary)";
-        reason = `Deep V-shaped transit of ${estimatedDepth.toFixed(2)}% detected with a secondary eclipse. Suggests a binary star system.`;
-        probability = 0.23;
-      } else {
-        isPlanet = true;
-        verdict = "Exoplanet Candidate";
-        reason = "Periodic flat-bottomed transit-like dips matching planetary radius constraints. Standard binary signatures ruled out.";
-        probability = 0.978;
-      }
+    // Check if it matches preset overrides first for demo consistency
+    const isPresetPlanet = name.toLowerCase().includes("planet") || name.toLowerCase().includes("exo");
+    const isPresetBinary = name.toLowerCase().includes("binary") || name.toLowerCase().includes("eclipse");
+    const isPresetNoise = name.toLowerCase().includes("noise") || name.toLowerCase().includes("stellar");
+
+    if ((isPresetPlanet || (depth >= 0.008 && depth <= 0.08 && snr >= 3.5)) && !isPresetBinary && !isPresetNoise) {
+      isPlanet = true;
+      verdict = "Exoplanet Candidate";
+      reason = `Periodic flat-bottomed transit-like dips matching planetary radius constraints. Signal-to-Noise Ratio (SNR) is high at ${snr.toFixed(1)}. Standard binary eclipses and stellar flares have been ruled out.`;
+      probability = 0.965 + Math.random() * 0.02; // Close to 97.8%
+    } else if (isPresetBinary || depth > 0.08) {
+      verdict = "Rejected (Eclipsing Binary)";
+      reason = `Deep V-shaped transit of ${estimatedDepth.toFixed(2)}% detected. This magnitude of transit depth exceeds the physical limit for planetary bodies orbiting G/M-dwarf stars, indicating a binary star system.`;
+      probability = 0.18 + Math.random() * 0.06;
+    } else {
+      verdict = "Rejected (Stellar Noise / Variability)";
+      reason = `No periodic transit dips detected above the 3-sigma noise limit. Denoised baseline shows continuous oscillations consistent with active stellar rotation or instrument noise (SNR: ${snr.toFixed(1)}).`;
+      probability = 0.02 + Math.random() * 0.06;
     }
     
     const denoised = [...flux];
     const gradcam = new Array(flux.length).fill(0);
     const attn = new Array(flux.length).fill(0);
     
-    if (isPlanet || depth > 0.08) {
+    if (isPlanet || verdict.includes("Binary")) {
       const minIdx = flux.indexOf(minVal);
       const windowSize = 100;
       for (let i = 0; i < flux.length; i++) {
@@ -641,7 +655,7 @@ function LiveDemoView({ sfx, playClick }) {
       estimated_depth: estimatedDepth,
       estimated_duration: isPlanet ? 4.2 : 0.0,
       estimated_period: isPlanet ? 14.8 : 0.0,
-      noise_level: depth > 0.05 ? "Low" : "Medium",
+      noise_level: noise < 0.005 ? "Low" : noise < 0.015 ? "Medium" : "High",
       verdict: verdict,
       reason: reason,
       denoised_flux: denoised,
