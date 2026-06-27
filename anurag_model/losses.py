@@ -1,44 +1,37 @@
-import torch
-import torch.nn as nn
+import tensorflow as tf
 
-class BinaryFocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+class BinaryFocalLoss(tf.keras.losses.Loss):
+    def __init__(self, alpha=0.25, gamma=2.0, name="binary_focal_loss", **kwargs):
         """
-        Binary Focal Loss for highly imbalanced exoplanet classification.
+        Binary Focal Loss for highly imbalanced exoplanet classification in TensorFlow.
         FL(pt) = -alpha * (1 - pt)^gamma * log(pt)
         """
-        super(BinaryFocalLoss, self).__init__()
+        super(BinaryFocalLoss, self).__init__(name=name, **kwargs)
         self.alpha = alpha
         self.gamma = gamma
-        self.reduction = reduction
 
-    def forward(self, inputs, targets):
-        # Reshape to 1D vectors
-        inputs = inputs.view(-1)
-        targets = targets.view(-1).float()
+    def call(self, y_true, y_pred):
+        # Convert inputs to float32
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.cast(y_pred, tf.float32)
         
         # Avoid log(0) and clamp probabilities
         eps = 1e-7
-        inputs = torch.clamp(inputs, eps, 1.0 - eps)
+        y_pred = tf.clip_by_value(y_pred, eps, 1.0 - eps)
         
         # Standard Binary Cross Entropy
-        bce = - (targets * torch.log(inputs) + (1.0 - targets) * torch.log(1.0 - inputs))
+        bce = - (y_true * tf.math.log(y_pred) + (1.0 - y_true) * tf.math.log(1.0 - y_pred))
         
         # pt represents model's probability of the correct class
-        pt = targets * inputs + (1.0 - targets) * (1.0 - inputs)
+        pt = y_true * y_pred + (1.0 - y_true) * (1.0 - y_pred)
         
         # Calculate focal weights: downweights easy examples where pt is close to 1
-        focal_weight = (1.0 - pt) ** self.gamma
+        focal_weight = tf.pow(1.0 - pt, self.gamma)
         
         # Class balance factor
-        alpha_t = targets * self.alpha + (1.0 - targets) * (1.0 - self.alpha)
+        alpha_t = y_true * self.alpha + (1.0 - y_true) * (1.0 - self.alpha)
         
         # Fused loss
         loss = alpha_t * focal_weight * bce
         
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        else:
-            return loss
+        return tf.reduce_mean(loss)

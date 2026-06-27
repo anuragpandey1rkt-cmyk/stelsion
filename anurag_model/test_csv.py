@@ -2,7 +2,7 @@ import sys
 import os
 import csv
 import numpy as np
-import torch
+import tensorflow as tf
 
 # Ensure parent directory is in path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,25 +51,23 @@ def run_csv_inference():
                 
     print(f"Loaded {len(flux_values)} data points.")
     
-    # Preprocess using the new DualViewPipeline
+    # Preprocess using the DualViewPipeline
     print("Running Dual-View Preprocessing Pipeline (Folding & Zooming)...")
     pipeline = DualViewPipeline()
     global_view, local_view, estimated_period, estimated_epoch = pipeline.process(flux_values)
     
     # Initialize model
     model = UpgradedExoplanetDetectorNet(input_len=2000)
-    model.eval()
     
-    # Convert to PyTorch Tensors of shape (Batch=1, SeqLen)
-    global_tensor = torch.tensor(global_view, dtype=torch.float32).unsqueeze(0)
-    local_tensor = torch.tensor(local_view, dtype=torch.float32).unsqueeze(0)
+    # Convert to NumPy arrays with batch and channel dimensions [Batch=1, SeqLen, Channels=1]
+    global_tensor = global_view[np.newaxis, :, np.newaxis]
+    local_tensor = local_view[np.newaxis, :, np.newaxis]
     
     # Run Inference
     print("Running model inference with Global and Local views...")
-    with torch.no_grad():
-        probability, attention = model(global_tensor, local_tensor)
+    probability, attention = model([global_tensor, local_tensor], training=False)
         
-    prob = probability.item()
+    prob = float(probability.numpy()[0][0])
     verdict = "Exoplanet Candidate" if prob >= 0.5 else "Rejected"
     
     # Estimate depth based on local view
@@ -78,7 +76,7 @@ def run_csv_inference():
     depth_percent = float(max(0.0, (median_val - min_val) * 100))
     
     # Parse Attention details
-    mean_attn = attention[0].mean(dim=0).numpy()
+    mean_attn = tf.reduce_mean(attention[0], axis=0).numpy()
     max_attn_idx = int(np.argmax(mean_attn))
     approx_sequence_location = max_attn_idx * 32
     

@@ -1,8 +1,7 @@
 import os
 import sys
 import numpy as np
-import torch
-from torch.utils.data import Dataset
+import tensorflow as tf
 
 # Ensure parent directory is in path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -41,13 +40,15 @@ def generate_trapezoidal_transit(length, period, depth, duration, t0):
         
     return profile
 
-class ExoplanetDataset(Dataset):
-    def __init__(self, num_samples=100, length=2000, has_transits=True, inject_prob=0.5):
+class ExoplanetDataset(tf.keras.utils.Sequence):
+    def __init__(self, num_samples=160, batch_size=16, length=2000, inject_prob=0.5, **kwargs):
         """
-        PyTorch Dataset that generates stellar noise baselines and dynamically 
+        Keras Sequence Dataset that generates stellar noise baselines and dynamically 
         injects physical planet transit dips on the fly.
         """
+        super(ExoplanetDataset, self).__init__(**kwargs)
         self.num_samples = num_samples
+        self.batch_size = batch_size
         self.length = length
         self.inject_prob = inject_prob
         self.pipeline = DualViewPipeline()
@@ -62,46 +63,57 @@ class ExoplanetDataset(Dataset):
             self.baselines.append(1.0 + stellar_var + noise)
 
     def __len__(self):
-        return self.num_samples
+        return int(np.ceil(self.num_samples / self.batch_size))
 
     def __getitem__(self, idx):
-        # 1. Start with raw stellar noise baseline
-        flux = self.baselines[idx].copy()
+        # Calculate start and end indices for this batch
+        start_idx = idx * self.batch_size
+        end_idx = min(start_idx + self.batch_size, self.num_samples)
+        current_batch_size = end_idx - start_idx
         
-        # 2. Decide if we inject a planet transit
-        label = 0.0
-        if np.random.random() < self.inject_prob:
-            label = 1.0
+        global_batch = []
+        local_batch = []
+        label_batch = []
+        
+        for i in range(start_idx, end_idx):
+            # 1. Start with raw stellar noise baseline
+            flux = self.baselines[i].copy()
             
-            # Randomized transit parameters
-            period = np.random.uniform(300, 600)   # Period in index units
-            depth = np.random.uniform(0.015, 0.04) # 1.5% to 4% transit depth
-            duration = np.random.uniform(30, 80)   # Transit duration in indices
-            t0 = np.random.uniform(50, 250)        # Transit epoch offset
+            # 2. Decide if we inject a planet transit
+            label = 0.0
+            if np.random.random() < self.inject_prob:
+                label = 1.0
+                
+                # Randomized transit parameters
+                period = np.random.uniform(300, 600)   # Period in index units
+                depth = np.random.uniform(0.015, 0.04) # 1.5% to 4% transit depth
+                duration = np.random.uniform(30, 80)   # Transit duration in indices
+                t0 = np.random.uniform(50, 250)        # Transit epoch offset
+                
+                # Generate and apply transit profile
+                transit_dip = generate_trapezoidal_transit(self.length, period, depth, duration, t0)
+                flux += transit_dip
+                
+            # 3. Add dynamic measurement white noise (Data Augmentation)
+            flux += np.random.normal(0, 0.001, self.length)
             
-            # Generate and apply transit profile
-            transit_dip = generate_trapezoidal_transit(self.length, period, depth, duration, t0)
-            flux += transit_dip
+            # 4. Process through the DualViewPipeline to extract Global/Local views
+            global_view, local_view, _, _ = self.pipeline.process(flux)
             
-        # 3. Add dynamic measurement white noise (Data Augmentation)
-        flux += np.random.normal(0, 0.001, self.length)
-        
-        # 4. Process through the DualViewPipeline to extract Global/Local views
-        global_view, local_view, _, _ = self.pipeline.process(flux)
-        
-        # Convert to PyTorch floats
-        global_tensor = torch.tensor(global_view, dtype=torch.float32)
-        local_tensor = torch.tensor(local_view, dtype=torch.float32)
-        label_tensor = torch.tensor([label], dtype=torch.float32)
-        
-        return global_tensor, local_tensor, label_tensor
+            # Append to lists with added channel dimension [SeqLen, 1]
+            global_batch.append(global_view[:, np.newaxis])
+            local_batch.append(local_view[:, np.newaxis])
+            label_batch.append([label])
+            
+        return (np.array(global_batch, dtype=np.float32), np.array(local_batch, dtype=np.float32)), np.array(label_batch, dtype=np.float32)
 
 if __name__ == "__main__":
-    print("Testing ExoplanetDataset and Transit Injections...")
-    dataset = ExoplanetDataset(num_samples=10, inject_prob=0.5)
-    g, l, y = dataset[0]
-    print(f"Dataset test index 0:")
-    print(f"Global View shape: {g.shape} (Expected: 2000)")
-    print(f"Local View shape: {l.shape} (Expected: 200)")
-    print(f"Label: {y.item()} (0.0 = Noise, 1.0 = Transit)")
+    print("Testing ExoplanetDataset and Transit Injections in TensorFlow...")
+    dataset = ExoplanetDataset(num_samples=10, batch_size=2, inject_prob=0.5)
+    inputs, y = dataset[0]
+    g_batch, l_batch = inputs
+    print(f"Dataset batch test:")
+    print(f"Global View Batch shape: {g_batch.shape} (Expected: (2, 2000, 1))")
+    print(f"Local View Batch shape: {l_batch.shape} (Expected: (2, 200, 1))")
+    print(f"Label Batch shape: {y.shape} (Expected: (2, 1))")
     print("\n✓ Dataset test passed successfully!")
