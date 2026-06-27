@@ -1,4 +1,4 @@
-# AstroAI: AI-Enabled Detection of Exoplanets from Noisy Light Curves
+# Stelsion: AI-Enabled Detection of Exoplanets from Noisy Light Curves
 
 A production-grade, end-to-end exoplanet detection platform for Kepler and TESS light curves. By integrating state-of-the-art 1D Convolutional Neural Networks (CNNs), Residual Blocks, and Multi-Head Self-Attention in PyTorch, AstroAI outperforms traditional BLS/TLS fitting methods while maintaining a computational cost significantly lower than ExoMiner.
 
