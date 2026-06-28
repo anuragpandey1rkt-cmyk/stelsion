@@ -21,7 +21,7 @@ def focal_loss(gamma=2.0, alpha=0.25):
     return loss
 
 def get_loss(loss_name="bce", **kwargs):
-    if loss_name == "focal_loss":
+    if loss_name in ["focal", "focal_loss"]:
         g = kwargs.get("gamma", 2.0)
         a = kwargs.get("alpha", 0.25)
         return focal_loss(gamma=g, alpha=a)

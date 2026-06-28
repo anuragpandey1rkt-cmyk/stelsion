@@ -36,15 +36,22 @@ MC_DROPOUT_RUNS = 20
 # Model training settings (Phase 9)
 BATCH_SIZE = 8
 EPOCHS = 80
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.0003
 OPTIMIZER = "adam"       # "adam", "sgd"
-LOSS = "bce"      # "bce", "focal_loss"
+LOSS = "focal"           # "bce", "focal"
 WEIGHT_DECAY = 1e-4
-DROPOUT_RATE = 0.3
+DROPOUT_RATE = 0.4       # Slightly increased from 0.3 for better regularization
 
 # Active architecture selection
 # Options: "baseline", "inceptiontime", "minor_axis_attention", "hybrid"
 ARCHITECTURE = "hybrid"
+
+# Cross-Validation Settings
+ENABLE_KFOLD = True
+NUM_FOLDS = 5
+
+# Data Augmentation settings
+ENABLE_TRAIN_AUGMENTATION = True
 
 # Hyperparameter optimization (Optuna)
 OPTUNA_TRIALS = 10

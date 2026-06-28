@@ -186,7 +186,25 @@ def run_benchmark(model_path: str, developer_name: str = None):
     end_time = time.perf_counter()
     
     y_prob = y_prob.flatten()
-    y_pred = (y_prob >= 0.5).astype(int)
+    
+    threshold = 0.5
+    meta_paths = [
+        os.path.join(os.path.dirname(model_path), "model_meta.json"),
+        os.path.join(os.path.dirname(model_path), "..", "saved_models", "model_meta.json"),
+        os.path.join(os.getcwd(), "saved_models", "model_meta.json")
+    ]
+    for p in meta_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r") as f:
+                    meta = json.load(f)
+                    threshold = meta.get("threshold", 0.5)
+                    print(f"Loaded optimized decision threshold: {threshold:.4f}")
+                    break
+            except Exception:
+                pass
+                
+    y_pred = (y_prob >= threshold).astype(int)
     
     total_inference_time_ms = (end_time - start_time) * 1000.0
     inference_time_per_sample = total_inference_time_ms / len(x_test)

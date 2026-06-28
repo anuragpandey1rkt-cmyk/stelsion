@@ -1,0 +1,6 @@
+{
+    "threshold": 0.37000000000000016,
+    "val_f1_score": 0.746268656716418,
+    "architecture": "hybrid",
+    "loss": "focal"
+}

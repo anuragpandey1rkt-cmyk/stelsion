@@ -1,23 +1,36 @@
 import numpy as np
 
-def augment_light_curve(flux, roll_frac=0.25, noise_std=0.01, scale_min=0.7, scale_max=1.3):
+def generate_augmentations(time, flux, count=1):
     """
-    Applies temporal rolling, Gaussian noise injection, and transit scaling to augment data.
+    Generates a list of physically realistic raw light curve augmentations:
+    - Random temporal shift (rolling)
+    - Gaussian noise injection (proportional to standard deviation)
+    - Slight amplitude scaling (simulating transit depth changes)
     """
-    augmented = [flux.copy()]
+    augmentations = []
     
-    # 1. Temporal shift (rolling)
-    shift = np.random.randint(1, int(len(flux) * roll_frac) + 1)
-    augmented.append(np.roll(flux, shift))
+    # Always include the original, un-augmented curve
+    augmentations.append((time.copy(), flux.copy()))
     
-    # 2. Gaussian noise injection
-    noise = np.random.normal(0, noise_std * np.std(flux), len(flux))
-    augmented.append(flux + noise)
-    
-    # 3. Scale transit depth (assuming transit values have negative dips)
-    min_val = np.min(flux)
-    if min_val < 0:
-        scale_factor = np.random.uniform(scale_min, scale_max)
-        augmented.append(flux * scale_factor)
+    for _ in range(count):
+        aug_time = time.copy()
+        aug_flux = flux.copy()
         
-    return augmented
+        # 1. Random temporal shift (rolling the array slightly)
+        shift_range = max(5, int(len(flux) * 0.05))
+        shift = np.random.randint(-shift_range, shift_range)
+        aug_flux = np.roll(aug_flux, shift)
+        
+        # 2. Gaussian noise injection (5% of standard deviation)
+        std_val = np.std(flux)
+        if std_val > 1e-6:
+            noise = np.random.normal(0, 0.05 * std_val, len(flux))
+            aug_flux = aug_flux + noise
+            
+        # 3. Slight amplitude scaling (between 0.85 and 1.15)
+        scale_factor = np.random.uniform(0.85, 1.15)
+        aug_flux = aug_flux * scale_factor
+        
+        augmentations.append((aug_time, aug_flux))
+        
+    return augmentations

@@ -1,0 +1,18 @@
+{
+    "ARCHITECTURE": "hybrid",
+    "PREPROCESSING": "adaptive_v2",
+    "INPUT_SHAPE": [
+        9,
+        800,
+        1
+    ],
+    "BATCH_SIZE": 8,
+    "EPOCHS": 80,
+    "LEARNING_RATE": 0.0003,
+    "LOSS": "focal",
+    "OPTIMIZER": "adam",
+    "WEIGHT_DECAY": 0.0001,
+    "SEED": 42,
+    "ENABLE_KFOLD": true,
+    "NUM_FOLDS": 5
+}

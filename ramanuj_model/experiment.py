@@ -6,8 +6,12 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, precision_recall_curve, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.metrics import (
+    roc_curve, precision_recall_curve, confusion_matrix,
+    ConfusionMatrixDisplay, classification_report
+)
 import ramanuj_model.config as config
+from ramanuj_model.utils import get_system_metadata
 
 def create_experiment_dir():
     """
@@ -36,12 +40,34 @@ def create_experiment_dir():
     os.makedirs(os.path.join(exp_dir, "plots"), exist_ok=True)
     return exp_dir
 
-def save_experiment_results(exp_dir, model, history, val_metrics, config_overrides=None, y_val_true=None, y_val_prob=None):
+def calculate_per_class_metrics(y_true, y_pred):
     """
-    Persists configuration parameters, metrics, logs, plots, and models to the run folder.
+    Computes Precision, Recall, and F1-score for class 1 (Transit) and class 0 (Non-Transit).
     """
-    # 1. Save model
-    model.save(os.path.join(exp_dir, "model.h5"))
+    report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+    
+    transit_key = '1.0' if '1.0' in report else '1'
+    non_transit_key = '0.0' if '0.0' in report else '0'
+    
+    transit_metrics = report.get(transit_key, {})
+    non_transit_metrics = report.get(non_transit_key, {})
+    
+    return {
+        "transit_precision": transit_metrics.get("precision", 0.0),
+        "transit_recall": transit_metrics.get("recall", 0.0),
+        "transit_f1": transit_metrics.get("f1-score", 0.0),
+        "non_transit_precision": non_transit_metrics.get("precision", 0.0),
+        "non_transit_recall": non_transit_metrics.get("recall", 0.0)
+    }
+
+def save_experiment_results(exp_dir, model, history, val_metrics, config_overrides=None,
+                            y_val_true=None, y_val_prob=None, threshold=0.5, best_epoch=1,
+                            elapsed_time=0.0, train_size=0, val_size=0, pos_size=0, neg_size=0):
+    """
+    Persists configuration parameters, metrics, plots, and a consolidated markdown report.
+    """
+    # 1. Save model in native Keras format
+    model.save(os.path.join(exp_dir, "model.keras"))
     
     # 2. Save configuration parameters
     cfg_dict = {
@@ -54,7 +80,9 @@ def save_experiment_results(exp_dir, model, history, val_metrics, config_overrid
         "LOSS": config.LOSS,
         "OPTIMIZER": config.OPTIMIZER,
         "WEIGHT_DECAY": config.WEIGHT_DECAY,
-        "SEED": config.SEED
+        "SEED": config.SEED,
+        "ENABLE_KFOLD": config.ENABLE_KFOLD,
+        "NUM_FOLDS": config.NUM_FOLDS
     }
     if config_overrides:
         cfg_dict.update(config_overrides)
@@ -67,18 +95,35 @@ def save_experiment_results(exp_dir, model, history, val_metrics, config_overrid
         json.dump(val_metrics, f, indent=4)
         
     # 4. Save history as CSV
-    if hasattr(history, 'history'):
+    if hasattr(history, 'history') and history.history:
         hist_df = pd.DataFrame(history.history)
         hist_df.to_csv(os.path.join(exp_dir, "history.csv"), index=False)
         
-    # 5. Generate and save plots if validation data is provided
+    # 5. Generate and save plots and calculate per-class metrics
+    per_class = {}
+    fps, fns = [], []
+    
     if y_val_true is not None and y_val_prob is not None:
+        y_val_pred = (y_val_prob >= threshold).astype(int)
+        
+        # Calculate per-class metrics
+        per_class = calculate_per_class_metrics(y_val_true, y_val_pred)
+        
+        # Identify False Positives and False Negatives examples
+        for i in range(len(y_val_true)):
+            true_l = int(y_val_true[i])
+            pred_l = int(y_val_pred[i])
+            prob = float(y_val_prob[i])
+            if true_l == 0 and pred_l == 1:
+                fps.append((i, prob))
+            elif true_l == 1 and pred_l == 0:
+                fns.append((i, prob))
+                
         # Confusion Matrix
-        y_val_pred = (y_val_prob >= 0.5).astype(int)
         cm = confusion_matrix(y_val_true, y_val_pred, labels=[0, 1])
         disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Non-Planet", "Candidate"])
         disp.plot(cmap=plt.cm.Blues)
-        plt.title("Validation Confusion Matrix")
+        plt.title(f"Validation Confusion Matrix (Threshold={threshold:.2f})")
         plt.savefig(os.path.join(exp_dir, "plots", "confusion_matrix.png"), dpi=150)
         plt.close()
         
@@ -106,22 +151,77 @@ def save_experiment_results(exp_dir, model, history, val_metrics, config_overrid
         plt.savefig(os.path.join(exp_dir, "plots", "precision_recall_curve.png"), dpi=150)
         plt.close()
         
-    # 6. Save reproducibility notes
+        # Prediction Probability Histogram
+        plt.figure()
+        plt.hist(y_val_prob[y_val_true == 1.0], bins=10, alpha=0.5, label='Transits (Positives)', color='orange')
+        plt.hist(y_val_prob[y_val_true == 0.0], bins=10, alpha=0.5, label='Non-Transits (Negatives)', color='blue')
+        plt.axvline(threshold, color='red', linestyle='--', label=f'Threshold ({threshold:.2f})')
+        plt.xlabel('Predicted Probability')
+        plt.ylabel('Count')
+        plt.title('Probability Distribution Histogram')
+        plt.legend(loc='upper center')
+        plt.savefig(os.path.join(exp_dir, "plots", "probability_histogram.png"), dpi=150)
+        plt.close()
+        
+    # Get system metadata for reproducibility
+    sys_meta = get_system_metadata()
+    
+    # 6. Generate rich markdown report
+    report_content = f"""# STELSION V3 Experiment Report - Run {os.path.basename(exp_dir)}
+
+## Meta Information & Reproducibility
+- **Model Architecture**: {cfg_dict['ARCHITECTURE']}
+- **Total Parameters**: {model.count_params():,}
+- **Dataset Size**: {train_size + val_size} (Train: {train_size}, Validation: {val_size})
+- **Class Distribution**: {pos_size} Positives, {neg_size} Negatives
+- **Training Time**: {elapsed_time:.2f} seconds
+- **Best Epoch**: {best_epoch}
+- **Optimal Threshold**: **{threshold:.4f}**
+- **Git Commit**: {sys_meta.get('git_commit', 'Unknown')}
+- **TensorFlow Version**: {sys_meta.get('tensorflow_version', 'Unknown')}
+- **Python Version**: {sys_meta.get('python_version', 'Unknown')}
+- **Random Seed**: {cfg_dict['SEED']}
+
+## Validation Metrics Summary
+- **Accuracy**: {val_metrics.get('accuracy', 0.0)*100:.2f}%
+- **Precision**: {val_metrics.get('precision', 0.0):.4f}
+- **Recall**: {val_metrics.get('recall', 0.0):.4f}
+- **F1 Score**: **{val_metrics.get('f1_score', 0.0):.4f}**
+- **ROC-AUC**: {val_metrics.get('roc_auc', 0.5):.4f}
+
+## Per-Class Metrics
+- **Transit Precision**: {per_class.get('transit_precision', 0.0):.4f}
+- **Transit Recall**: {per_class.get('transit_recall', 0.0):.4f}
+- **Transit F1**: {per_class.get('transit_f1', 0.0):.4f}
+- **Non-Transit Precision**: {per_class.get('non_transit_precision', 0.0):.4f}
+- **Non-Transit Recall**: {per_class.get('non_transit_recall', 0.0):.4f}
+
+## Error Analysis (Validation Set Examples)
+- **False Positives ({len(fps)} examples)**: {', '.join([f"idx {i} (prob {p:.3f})" for i, p in fps[:10]])}
+- **False Negatives ({len(fns)} examples)**: {', '.join([f"idx {i} (prob {p:.3f})" for i, p in fns[:10]])}
+
+## Evaluation Curves
+### Confusion Matrix
+![Confusion Matrix](plots/confusion_matrix.png)
+
+### ROC Curve
+![ROC Curve](plots/roc_curve.png)
+
+### Precision-Recall Curve
+![PR Curve](plots/precision_recall_curve.png)
+
+### Probability Histogram
+![Histogram](plots/probability_histogram.png)
+"""
+    # Write to local run folder
     with open(os.path.join(exp_dir, "notes.md"), "w") as f:
-        f.write(f"# Experiment Run {os.path.basename(exp_dir)}\n\n")
-        f.write(f"- **Architecture**: {cfg_dict['ARCHITECTURE']}\n")
-        f.write(f"- **Preprocessing**: {cfg_dict['PREPROCESSING']}\n")
-        f.write(f"- **Total Parameters**: {model.count_params():,}\n")
-        f.write(f"- **Learning Rate**: {cfg_dict['LEARNING_RATE']}\n")
-        f.write(f"- **Batch Size**: {cfg_dict['BATCH_SIZE']}\n")
-        f.write(f"- **Epochs Run**: {cfg_dict['EPOCHS']}\n\n")
-        f.write("## Validation Metrics Summary\n")
-        for k, v in val_metrics.items():
-            if isinstance(v, float):
-                f.write(f"- **{k}**: {v:.4f}\n")
-            else:
-                f.write(f"- **{k}**: {v}\n")
-        f.write("\n## Observations\n")
-        f.write("Training concluded successfully. Write observations here.\n")
+        f.write(report_content)
+        
+    # Write to experiments/latest_report.md
+    latest_report_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "experiments", "latest_report.md"))
+    os.makedirs(os.path.dirname(latest_report_path), exist_ok=True)
+    with open(latest_report_path, "w") as f:
+        f.write(report_content)
         
     print(f"All experiment files saved successfully to: {exp_dir}")
+    print(f"Consolidated latest report saved to: {latest_report_path}")

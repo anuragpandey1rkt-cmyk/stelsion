@@ -44,7 +44,6 @@ def extract_folded_views(time: np.ndarray, flux: np.ndarray, period: float, t0: 
     2. Local View (200 bins)
     3. Orbit Matrix (10 x 500 = 5000 elements)
     """
-    # 1. Fold light curve and center transit at phase 0.5
     phase = ((time - t0) / period + 0.5) % 1.0
     sort_idx = np.argsort(phase)
     folded_phase = phase[sort_idx]
@@ -126,89 +125,102 @@ def prepare_datasets():
     # Remove duplicates by KIC ID (kepid)
     df = df.drop_duplicates(subset=["kepid"])
     
-    x_packed = []
-    labels = []
-    kepids = []
+    # Map labels: confirmed planet or candidate -> 1.0, others -> 0.0
+    df["numeric_label"] = df["label"].apply(
+        lambda l: 1.0 if str(l).strip().lower() in ["transit", "candidate"] else 0.0
+    )
     
-    print("Ingesting and processing Kepler NPZ light curves...")
-    for _, row in df.iterrows():
-        file_path = row["file"]
-        kepid = row["kepid"]
-        lbl_str = str(row["label"]).strip().lower()
+    # Stratified Splits at index level (70% Train, 15% Validation, 15% Test)
+    train_df, temp_df = train_test_split(
+        df, test_size=0.3, random_state=config.SEED, stratify=df["numeric_label"]
+    )
+    val_df, test_df = train_test_split(
+        temp_df, test_size=0.5, random_state=config.SEED, stratify=temp_df["numeric_label"]
+    )
+    
+    print("\n" + "=" * 50)
+    print("DATASET INDEX-LEVEL SPLITS (PRE-INGESTION)")
+    print("=" * 50)
+    print(f"Total Unique Catalog Samples: {len(df)}")
+    print(f"Train split:       {len(train_df)} targets")
+    print(f"Validation split:  {len(val_df)} targets")
+    print(f"Test split:        {len(test_df)} targets")
+    print("=" * 50 + "\n")
+    
+    from ramanuj_model.augmentation import generate_augmentations
+    
+    def process_split(split_df, augment=False):
+        x_packed = []
+        labels = []
+        kepids = []
         
-        # Map labels: confirmed planet or candidate -> 1.0, others -> 0.0
-        label = 1.0 if lbl_str in ["transit", "candidate"] else 0.0
-        
-        if not os.path.exists(file_path):
-            continue
+        for _, row in split_df.iterrows():
+            file_path = row["file"]
+            kepid = row["kepid"]
+            label = row["numeric_label"]
             
-        try:
-            npz = np.load(file_path)
-            time = npz["time"]
-            flux = npz["flux"]
-            
-            # Remove NaNs from raw input
-            nan_mask = np.isnan(time) | np.isnan(flux)
-            time = time[~nan_mask]
-            flux = flux[~nan_mask]
-            
-            if len(flux) < 50:
+            if not os.path.exists(file_path):
                 continue
                 
-            # Apply configurable preprocessing
-            clean_flux = apply_preprocessing_pipeline(flux)
-            
-            # Run BLS candidate generation
-            period, t0, duration, depth = run_bls_candidate_generation(time, clean_flux)
-            
-            # Fold and extract representation views
-            g_view, l_view, o_matrix = extract_folded_views(time, clean_flux, period, t0, duration)
-            
-            # Pack views into the single (9, 800, 1) shape expected by the model
-            packed_sample = pack_views(g_view, l_view, o_matrix)
-            
-            x_packed.append(packed_sample)
-            labels.append(label)
-            kepids.append(kepid)
-        except Exception as e:
-            print(f"Warning: Corrupted sample {kepid} skipped: {e}")
-            
-    # Convert lists to NumPy arrays
-    x_packed = np.array(x_packed, dtype=np.float32)
-    labels = np.array(labels, dtype=np.float32)
-    kepids = np.array(kepids, dtype=np.int32)
+            try:
+                npz = np.load(file_path)
+                time = npz["time"]
+                flux = npz["flux"]
+                
+                # Remove NaNs from raw input
+                nan_mask = np.isnan(time) | np.isnan(flux)
+                time = time[~nan_mask]
+                flux = flux[~nan_mask]
+                
+                if len(flux) < 50:
+                    continue
+                    
+                # Apply configurable preprocessing
+                clean_flux = apply_preprocessing_pipeline(flux)
+                
+                # Augment only training transit candidates
+                count = 2 if (label == 1.0 and augment) else 0
+                variants = generate_augmentations(time, clean_flux, count=count)
+                
+                for t_v, f_v in variants:
+                    # Run BLS candidate generation
+                    period, t0, duration, depth = run_bls_candidate_generation(t_v, f_v)
+                    # Fold and extract representation views
+                    g_view, l_view, o_matrix = extract_folded_views(t_v, f_v, period, t0, duration)
+                    # Pack views
+                    packed_sample = pack_views(g_view, l_view, o_matrix)
+                    
+                    x_packed.append(packed_sample)
+                    labels.append(label)
+                    kepids.append(kepid)
+            except Exception:
+                pass
+                
+        return np.array(x_packed, dtype=np.float32), np.array(labels, dtype=np.float32), np.array(kepids, dtype=np.int32)
+        
+    print("Processing Train Split...")
+    x_train, y_train, _ = process_split(train_df, augment=config.ENABLE_TRAIN_AUGMENTATION)
     
-    # Stratified Splits (70% Train, 15% Validation, 15% Test)
-    indices = np.arange(len(labels))
-    train_idx, temp_idx = train_test_split(
-        indices, test_size=0.3, random_state=config.SEED, stratify=labels
-    )
-    val_idx, test_idx = train_test_split(
-        temp_idx, test_size=0.5, random_state=config.SEED, stratify=labels[temp_idx]
-    )
+    print("Processing Validation Split...")
+    x_val, y_val, _ = process_split(val_df, augment=False)
     
-    # Extract splits
-    train_split = (x_packed[train_idx], labels[train_idx])
-    val_split = (x_packed[val_idx], labels[val_idx])
-    test_split = (x_packed[test_idx], labels[test_idx])
-    
-    # In-memory logging of dataset details
-    print("\n" + "=" * 50)
-    print("DATASET PIPELINE INGESTION LOG")
-    print("=" * 50)
-    print(f"Total Unique Ingested Samples: {len(labels)}")
-    print(f"Class Distribution: {np.sum(labels == 1.0)} Transits, {np.sum(labels == 0.0)} Non-Transits")
-    print(f"Train set size:       {len(train_idx)} samples")
-    print(f"Validation set size:  {len(val_idx)} samples")
-    print(f"Test set size:        {len(test_idx)} samples")
-    print("=" * 50 + "\n")
+    print("Processing Test Split...")
+    x_test, y_test, test_kepids = process_split(test_df, augment=False)
     
     # Save test dataset split to datasets/test/ for shared benchmark evaluation
     os.makedirs("datasets/test", exist_ok=True)
-    for idx in test_idx:
-        k_id = kepids[idx]
-        lbl = int(labels[idx])
-        flat_flux = x_packed[idx].flatten()
+    # Clean previous JSON files to avoid pollution
+    for f in os.listdir("datasets/test"):
+        if f.endswith(".json"):
+            try:
+                os.remove(os.path.join("datasets/test", f))
+            except Exception:
+                pass
+                
+    for idx in range(len(y_test)):
+        k_id = test_kepids[idx]
+        lbl = int(y_test[idx])
+        flat_flux = x_test[idx].flatten()
         test_file = os.path.join("datasets/test", f"KIC_{k_id}.json")
         with open(test_file, "w") as f:
             json.dump({
@@ -217,23 +229,12 @@ def prepare_datasets():
                 "candidate": f"KIC {k_id}"
             }, f)
             
-    # Apply balancing to training set (oversample minority class)
-    tr_x, tr_y = train_split
-    c0 = np.where(tr_y == 0.0)[0]
-    c1 = np.where(tr_y == 1.0)[0]
+    print("\n" + "=" * 50)
+    print("PROCESSED DATASET SIZE DETAILS")
+    print("=" * 50)
+    print(f"Train set:       {len(y_train)} samples (Positive: {np.sum(y_train == 1.0)}, Negative: {np.sum(y_train == 0.0)})")
+    print(f"Validation set:  {len(y_val)} samples (Positive: {np.sum(y_val == 1.0)}, Negative: {np.sum(y_val == 0.0)})")
+    print(f"Test set:        {len(y_test)} samples (Positive: {np.sum(y_test == 1.0)}, Negative: {np.sum(y_test == 0.0)})")
+    print("=" * 50 + "\n")
     
-    if len(c0) > 0 and len(c1) > 0 and len(c0) != len(c1):
-        target = max(len(c0), len(c1))
-        if len(c0) < target:
-            extra = np.random.choice(c0, size=target - len(c0), replace=True)
-            c0 = np.concatenate([c0, extra])
-        if len(c1) < target:
-            extra = np.random.choice(c1, size=target - len(c1), replace=True)
-            c1 = np.concatenate([c1, extra])
-            
-        balanced_indices = np.concatenate([c0, c1])
-        np.random.shuffle(balanced_indices)
-        
-        train_split = (tr_x[balanced_indices], tr_y[balanced_indices])
-        
-    return train_split, val_split, test_split
+    return (x_train, y_train), (x_val, y_val), (x_test, y_test)
